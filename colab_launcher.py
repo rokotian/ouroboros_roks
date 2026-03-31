@@ -533,12 +533,62 @@ while True:
         elif msg.get("document"):
             doc = msg["document"]
             mime_type = str(doc.get("mime_type") or "")
+            filename = str(doc.get("file_name") or "unknown")
+            file_id = doc.get("file_id")
             if mime_type.startswith("image/"):
-                file_id = doc.get("file_id")
                 if file_id:
                     b64, mime = TG.download_file_base64(file_id)
                     if b64:
                         image_data = (b64, mime, caption)
+            elif file_id:
+                import base64 as _b64mod, io as _io
+                b64_content, _mime = TG.download_file_base64(file_id)
+                if b64_content:
+                    raw_bytes = _b64mod.b64decode(b64_content)
+                    extracted_text = None
+                    is_text = (mime_type.startswith("text/") or
+                               any(filename.lower().endswith(ext) for ext in
+                                   [".txt", ".md", ".csv", ".json", ".log",
+                                    ".py", ".js", ".ts", ".html", ".xml",
+                                    ".yaml", ".yml", ".toml"]))
+                    is_pdf = (mime_type == "application/pdf" or
+                              filename.lower().endswith(".pdf"))
+                    if is_text:
+                        try:
+                            extracted_text = raw_bytes.decode("utf-8", errors="replace")
+                        except Exception as _e:
+                            extracted_text = f"[Ошибка чтения файла: {_e}]"
+                    elif is_pdf:
+                        try:
+                            try:
+                                from pdfminer.high_level import extract_text as _pdf_extract
+                                extracted_text = _pdf_extract(_io.BytesIO(raw_bytes))
+                            except ImportError:
+                                try:
+                                    import PyPDF2
+                                    reader = PyPDF2.PdfReader(_io.BytesIO(raw_bytes))
+                                    extracted_text = "
+".join(
+                                        page.extract_text() or "" for page in reader.pages)
+                                except ImportError:
+                                    extracted_text = ("[PDF получен, но библиотека для чтения "
+                                                      "не установлена (нужна pdfminer.six или PyPDF2)]")  
+                        except Exception as _e:
+                            extracted_text = f"[Ошибка чтения PDF: {_e}]"
+                    else:
+                        ext = filename.rsplit(".", 1)[-1] if "." in filename else mime_type
+                        extracted_text = (f"[Файл {filename!r} получен, но формат "
+                                          f"{ext!r} не поддерживается для чтения текста]")  
+                    if extracted_text:
+                        MAX_FILE_TEXT = 50000
+                        if len(extracted_text) > MAX_FILE_TEXT:
+                            extracted_text = extracted_text[:MAX_FILE_TEXT] + "
+[... текст обрезан ...]"
+                        file_block = f"[Файл: {filename}]
+{extracted_text}"
+                        text = (text + "
+
+" + file_block) if text else file_block
 
         st = load_state()
         if st.get("owner_id") is None:
