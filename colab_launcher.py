@@ -567,9 +567,7 @@ while True:
                                 try:
                                     import PyPDF2
                                     reader = PyPDF2.PdfReader(_io.BytesIO(raw_bytes))
-                                    extracted_text = "
-".join(
-                                        page.extract_text() or "" for page in reader.pages)
+                                    extracted_text = "\n".join(page.extract_text() or "" for page in reader.pages)
                                 except ImportError:
                                     extracted_text = ("[PDF получен, но библиотека для чтения "
                                                       "не установлена (нужна pdfminer.six или PyPDF2)]")  
@@ -582,13 +580,9 @@ while True:
                     if extracted_text:
                         MAX_FILE_TEXT = 50000
                         if len(extracted_text) > MAX_FILE_TEXT:
-                            extracted_text = extracted_text[:MAX_FILE_TEXT] + "
-[... текст обрезан ...]"
-                        file_block = f"[Файл: {filename}]
-{extracted_text}"
-                        text = (text + "
-
-" + file_block) if text else file_block
+                            extracted_text = extracted_text[:MAX_FILE_TEXT] + "\n[... текст обрезан ...]"
+                        file_block = f"[Файл: {filename}]\n{extracted_text}"
+                        text = (text + "\n\n" + file_block) if text else file_block
 
         st = load_state()
         if st.get("owner_id") is None:
@@ -686,14 +680,42 @@ while True:
                         if _txt2:
                             _batched_texts.append(_txt2)
                             _batch_deadline = max(_batch_deadline, time.time() + 0.3)  # extend for burst
-                        if not _batched_image:
-                            _doc2 = _msg2.get("document") or {}
-                            _photo2 = (_msg2.get("photo") or [None])[-1] or {}
-                            _fid2 = _photo2.get("file_id") or _doc2.get("file_id")
-                            if _fid2:
-                                _b642, _mime2 = TG.download_file_base64(_fid2)
-                                if _b642:
-                                    _batched_image = (_b642, _mime2, _txt2)
+                        # Handle attachments in batch window
+                        _doc2 = _msg2.get("document") or {}
+                        _photo2 = (_msg2.get("photo") or [None])[-1] or {}
+                        _doc_fid = _doc2.get("file_id")
+                        _photo_fid = _photo2.get("file_id")
+                        if _doc_fid and not _batched_image:
+                            _doc_fname = _doc2.get("file_name", "file")
+                            _doc_mime = _doc2.get("mime_type", "")
+                            _b642, _m2 = TG.download_file_base64(_doc_fid)
+                            if _b642:
+                                import base64 as _b64mod
+                                _raw2 = _b64mod.b64decode(_b642)
+                                if _doc_mime == "application/pdf" or _doc_fname.lower().endswith(".pdf"):
+                                    try:
+                                        import io as _io2
+                                        from pdfminer.high_level import extract_text as _pdf_extract2
+                                        _extracted2 = _pdf_extract2(_io2.BytesIO(_raw2)).strip()
+                                    except Exception:
+                                        _extracted2 = "[PDF: не удалось извлечь текст]"
+                                elif _doc_mime.startswith("text/") or _doc_fname.lower().endswith((".txt", ".md", ".csv", ".json")):
+                                    try:
+                                        _extracted2 = _raw2.decode("utf-8", errors="replace").strip()
+                                    except Exception:
+                                        _extracted2 = "[Файл: не удалось прочитать]"
+                                else:
+                                    _extracted2 = None
+                                if _extracted2:
+                                    _file_block2 = f"[Файл: {_doc_fname}]\n{_extracted2[:8000]}"
+                                    _batched_texts.append(_file_block2)
+                                    _batch_deadline = max(_batch_deadline, time.time() + 0.3)
+                                else:
+                                    _batched_image = (_b642, _m2, _txt2)
+                        elif _photo_fid and not _batched_image:
+                            _b642, _mime2 = TG.download_file_base64(_photo_fid)
+                            if _b642:
+                                _batched_image = (_b642, _mime2, _txt2)
 
             # Save state once if mutated during batch window
             if _batch_state_dirty:
