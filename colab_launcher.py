@@ -577,12 +577,16 @@ while True:
                         ext = filename.rsplit(".", 1)[-1] if "." in filename else mime_type
                         extracted_text = (f"[Файл {filename!r} получен, но формат "
                                           f"{ext!r} не поддерживается для чтения текста]")  
-                    if extracted_text:
-                        MAX_FILE_TEXT = 50000
-                        if len(extracted_text) > MAX_FILE_TEXT:
-                            extracted_text = extracted_text[:MAX_FILE_TEXT] + "\n[... текст обрезан ...]"
-                        file_block = f"[Файл: {filename}]\n{extracted_text}"
-                        text = (text + "\n\n" + file_block) if text else file_block
+                    if extracted_text is None:
+                        extracted_text = f"[Файл {filename!r} получен, но текст не удалось извлечь]"
+                    elif extracted_text.strip() == "" and is_pdf:
+                        extracted_text = (f"[PDF {filename!r} получен, но текст пустой — "
+                                          f"возможно, это скан. Размер: {len(raw_bytes)} байт]")
+                    MAX_FILE_TEXT = 50000
+                    if len(extracted_text) > MAX_FILE_TEXT:
+                        extracted_text = extracted_text[:MAX_FILE_TEXT] + "\n[... текст обрезан ...]"
+                    file_block = f"[Файл: {filename}]\n{extracted_text}"
+                    text = (text + "\n\n" + file_block) if text else file_block
 
         st = load_state()
         if st.get("owner_id") is None:
