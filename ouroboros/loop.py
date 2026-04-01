@@ -6,6 +6,7 @@ Extracted from agent.py to keep the agent thin.
 """
 
 from __future__ import annotations
+from utils import parse_pdf_tool
 
 import json
 import os
@@ -977,3 +978,22 @@ def _safe_args(v: Any) -> Any:
     except Exception:
         log.debug("Failed to serialize args for trace logging", exc_info=True)
         return {"_repr": repr(v)}
+
+@bot.message_handler(content_types=['document'])
+def handle_pdf(message):
+    if message.document.mime_type == 'application/pdf':
+        # 1. Скачиваем
+        file_info = bot.get_file(message.document.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        file_path = f"/content/{message.document.file_name}"
+        
+        with open(file_path, 'wb') as f:
+            f.write(downloaded_file)
+        
+        # 2. Парсим
+        text = parse_pdf_tool(file_path)
+        
+        # 3. Передаем агенту (используйте тот объект агента, который создан в loop.py)
+        # В Ouroboros это обычно вызов метода из agent.py или прямое добавление в память
+        response = agent.generate_response(f"Данные из PDF: {text}") 
+        bot.reply_to(message, response)
