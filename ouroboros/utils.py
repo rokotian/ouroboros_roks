@@ -317,18 +317,29 @@ def sanitize_tool_args_for_log(
         log.debug("Failed to sanitize tool arguments for logging", exc_info=True)
         try:
             return json.loads(json.dumps(args, ensure_ascii=False, default=str))
-
-        
         except Exception:
             log.debug("Tool argument sanitization failed completely", exc_info=True)
             return {"_error": "sanitization_failed"}
 
-import fitz  # PyMuPDF
 
-def parse_pdf_tool(file_path):
-    """Извлекает текст из PDF-файла для анализа агентом."""
-    doc = fitz.open(file_path)
-    text = ""
-    for page in doc:
-        text += page.get_text()
-    return text
+def parse_pdf_tool(file_path: str) -> str:
+    """Extract text from a PDF file. Lazy-imports fitz (PyMuPDF) to avoid startup failures."""
+    try:
+        import fitz  # PyMuPDF
+        doc = fitz.open(file_path)
+        text = ""
+        for page in doc:
+            text += page.get_text()
+        return text
+    except ImportError:
+        # Fallback to pdfminer
+        try:
+            import io
+            from pdfminer.high_level import extract_text as _pdf_extract
+            with open(file_path, "rb") as f:
+                raw = f.read()
+            return _pdf_extract(io.BytesIO(raw))
+        except Exception as e:
+            return f"[PDF parsing failed: {e}]"
+    except Exception as e:
+        return f"[PDF parsing failed: {e}]"
