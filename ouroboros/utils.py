@@ -317,6 +317,18 @@ def sanitize_tool_args_for_log(
         log.debug("Failed to sanitize tool arguments for logging", exc_info=True)
         try:
             return json.loads(json.dumps(args, ensure_ascii=False, default=str))
+
+        
         except Exception:
             log.debug("Tool argument sanitization failed completely", exc_info=True)
             return {"_error": "sanitization_failed"}
+
+import fitz  # PyMuPDF
+
+def parse_pdf_tool(file_path):
+    """Извлекает текст из PDF-файла для анализа агентом."""
+    doc = fitz.open(file_path)
+    text = ""
+    for page in doc:
+        text += page.get_text()
+    return text
