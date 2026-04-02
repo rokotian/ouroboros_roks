@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 # ----------------------------
 def install_launcher_deps() -> None:
     subprocess.run(
-        [sys.executable, "-m", "pip", "install", "-q", "openai>=1.0.0", "requests", "pdfminer.six"],
+        [sys.executable, "-m", "pip", "install", "-q", "openai>=1.0.0", "requests", "pdfminer.six", "pypdf"],
         check=True,
     )
 
@@ -202,6 +202,7 @@ init_state()
 from supervisor.telegram import (
     init as telegram_init, TelegramClient, send_with_budget, log_chat,
 )
+from supervisor.document_parser import extract_document_text, make_document_block
 TG = TelegramClient(str(TELEGRAM_BOT_TOKEN))
 telegram_init(
     drive_root=DRIVE_ROOT,
@@ -541,51 +542,12 @@ while True:
                     if b64:
                         image_data = (b64, mime, caption)
             elif file_id:
-                import base64 as _b64mod, io as _io
+                import base64 as _b64mod
                 b64_content, _mime = TG.download_file_base64(file_id)
                 if b64_content:
                     raw_bytes = _b64mod.b64decode(b64_content)
-                    extracted_text = None
-                    is_text = (mime_type.startswith("text/") or
-                               any(filename.lower().endswith(ext) for ext in
-                                   [".txt", ".md", ".csv", ".json", ".log",
-                                    ".py", ".js", ".ts", ".html", ".xml",
-                                    ".yaml", ".yml", ".toml"]))
-                    is_pdf = (mime_type == "application/pdf" or
-                              filename.lower().endswith(".pdf"))
-                    if is_text:
-                        try:
-                            extracted_text = raw_bytes.decode("utf-8", errors="replace")
-                        except Exception as _e:
-                            extracted_text = f"[Ошибка чтения файла: {_e}]"
-                    elif is_pdf:
-                        try:
-                            try:
-                                from pdfminer.high_level import extract_text as _pdf_extract
-                                extracted_text = _pdf_extract(_io.BytesIO(raw_bytes))
-                            except ImportError:
-                                try:
-                                    import PyPDF2
-                                    reader = PyPDF2.PdfReader(_io.BytesIO(raw_bytes))
-                                    extracted_text = "\n".join(page.extract_text() or "" for page in reader.pages)
-                                except ImportError:
-                                    extracted_text = ("[PDF получен, но библиотека для чтения "
-                                                      "не установлена (нужна pdfminer.six или PyPDF2)]")  
-                        except Exception as _e:
-                            extracted_text = f"[Ошибка чтения PDF: {_e}]"
-                    else:
-                        ext = filename.rsplit(".", 1)[-1] if "." in filename else mime_type
-                        extracted_text = (f"[Файл {filename!r} получен, но формат "
-                                          f"{ext!r} не поддерживается для чтения текста]")  
-                    if extracted_text is None:
-                        extracted_text = f"[Файл {filename!r} получен, но текст не удалось извлечь]"
-                    elif extracted_text.strip() == "" and is_pdf:
-                        extracted_text = (f"[PDF {filename!r} получен, но текст пустой — "
-                                          f"возможно, это скан. Размер: {len(raw_bytes)} байт]")
-                    MAX_FILE_TEXT = 50000
-                    if len(extracted_text) > MAX_FILE_TEXT:
-                        extracted_text = extracted_text[:MAX_FILE_TEXT] + "\n[... текст обрезан ...]"
-                    file_block = f"[Файл: {filename}]\n{extracted_text}"
+                    extracted_text = extract_document_text(raw_bytes, mime_type, filename)
+                    file_block = make_document_block(filename, extracted_text, max_chars=50_000)
                     text = (text + "\n\n" + file_block) if text else file_block
 
         st = load_state()
@@ -696,26 +658,10 @@ while True:
                             if _b642:
                                 import base64 as _b64mod
                                 _raw2 = _b64mod.b64decode(_b642)
-                                if _doc_mime == "application/pdf" or _doc_fname.lower().endswith(".pdf"):
-                                    try:
-                                        import io as _io2
-                                        from pdfminer.high_level import extract_text as _pdf_extract2
-                                        _extracted2 = _pdf_extract2(_io2.BytesIO(_raw2)).strip()
-                                    except Exception:
-                                        _extracted2 = "[PDF: не удалось извлечь текст]"
-                                elif _doc_mime.startswith("text/") or _doc_fname.lower().endswith((".txt", ".md", ".csv", ".json")):
-                                    try:
-                                        _extracted2 = _raw2.decode("utf-8", errors="replace").strip()
-                                    except Exception:
-                                        _extracted2 = "[Файл: не удалось прочитать]"
-                                else:
-                                    _extracted2 = None
-                                if _extracted2:
-                                    _file_block2 = f"[Файл: {_doc_fname}]\n{_extracted2[:8000]}"
-                                    _batched_texts.append(_file_block2)
-                                    _batch_deadline = max(_batch_deadline, time.time() + 0.3)
-                                else:
-                                    _batched_image = (_b642, _m2, _txt2)
+                                _extracted2 = extract_document_text(_raw2, _doc_mime, _doc_fname)
+                                _file_block2 = make_document_block(_doc_fname, _extracted2, max_chars=8_000)
+                                _batched_texts.append(_file_block2)
+                                _batch_deadline = max(_batch_deadline, time.time() + 0.3)
                         elif _photo_fid and not _batched_image:
                             _b642, _mime2 = TG.download_file_base64(_photo_fid)
                             if _b642:
