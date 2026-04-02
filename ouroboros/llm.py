@@ -3,6 +3,9 @@ Ouroboros — LLM client.
 
 The only module that communicates with the LLM API.
 Contract: chat(), default_model(), available_models(), add_usage().
+
+GigaChat is available as a secondary client via gigachat_query().
+The main agent loop always uses OpenRouter (supports tool calling).
 """
 
 from __future__ import annotations
@@ -14,7 +17,6 @@ from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-DEFAULT_LIGHT_MODEL = "GigaChat-2-Max"
 DEFAULT_GIGACHAT_BASE_URL = "https://gigachat.devices.sberbank.ru/api/v1"
 DEFAULT_GIGACHAT_MODEL = "GigaChat-2-Max"
 DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4.6"
@@ -106,26 +108,27 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
 
 
 class LLMClient:
-    """API wrapper. All LLM calls go through this class."""
+    """API wrapper. All LLM calls go through this class.
+
+    Main agent loop always uses OpenRouter (required for tool calling).
+    GigaChat is available via gigachat_query() for simple text tasks.
+    """
 
     def __init__(
         self,
         api_key: Optional[str] = None,
         base_url: str = "",
     ):
-        gigachat_api_key = os.environ.get("Gigachat_API", "") or os.environ.get("GIGACHAT_API", "")
-
-        # Default behavior: use GigaChat whenever Gigachat_API token is present.
-        if gigachat_api_key:
-            self._provider = "gigachat"
-            self._api_key = api_key or gigachat_api_key
-            self._base_url = base_url or os.environ.get("GIGACHAT_BASE_URL", DEFAULT_GIGACHAT_BASE_URL)
-        else:
-            self._provider = "openrouter"
-            self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-            self._base_url = base_url or "https://openrouter.ai/api/v1"
+        # Always use OpenRouter for the main agent loop (tool calling support)
+        self._provider = "openrouter"
+        self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+        self._base_url = base_url or "https://openrouter.ai/api/v1"
 
         self._client = None
+
+        # GigaChat token cache (used by gigachat_query)
+        self._gigachat_token: Optional[str] = None
+        self._gigachat_token_expires: float = 0.0
 
     def _get_client(self):
         if self._client is None:
@@ -134,13 +137,84 @@ class LLMClient:
                 "base_url": self._base_url,
                 "api_key": self._api_key,
             }
-            if self._provider == "openrouter":
-                kwargs["default_headers"] = {
-                    "HTTP-Referer": "https://colab.research.google.com/",
-                    "X-Title": "Ouroboros",
-                }
+            kwargs["default_headers"] = {
+                "HTTP-Referer": "https://colab.research.google.com/",
+                "X-Title": "Ouroboros",
+            }
             self._client = OpenAI(**kwargs)
         return self._client
+
+    def _get_gigachat_token(self) -> str:
+        """Get OAuth2 access token for GigaChat API, with caching."""
+        import requests
+        import uuid
+
+        # Return cached token if still valid (60s buffer)
+        if self._gigachat_token and time.time() < self._gigachat_token_expires - 60:
+            return self._gigachat_token
+
+        credentials = os.environ.get("Gigachat_API", "") or os.environ.get("GIGACHAT_API", "")
+        if not credentials:
+            raise RuntimeError("GigaChat credentials not found in env (Gigachat_API)")
+
+        url = "https://ngw.devices.sberbank.ru:9443/api/v2/oauth"
+        headers = {
+            "Authorization": f"Basic {credentials}",
+            "RqUID": str(uuid.uuid4()),
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        resp = requests.post(url, headers=headers, data={"scope": "GIGACHAT_API_PERS"}, verify=False, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get("access_token")
+        expires_at = data.get("expires_at", 0)
+        if not token:
+            raise RuntimeError(f"GigaChat OAuth returned no token: {data}")
+
+        self._gigachat_token = token
+        # expires_at is in milliseconds
+        self._gigachat_token_expires = float(expires_at) / 1000.0 if expires_at > 1e10 else float(expires_at)
+        log.info("GigaChat token refreshed, expires at %s", self._gigachat_token_expires)
+        return token
+
+    def gigachat_query(
+        self,
+        messages: List[Dict[str, Any]],
+        model: str = DEFAULT_GIGACHAT_MODEL,
+        max_tokens: int = 2048,
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Send a simple text query to GigaChat (no tools).
+
+        Use for: web search assistance, code generation tasks, simple text queries.
+        Does NOT support tool calling — use chat() for that.
+
+        Returns:
+            (text_response, usage_dict)
+        """
+        import requests
+
+        token = self._get_gigachat_token()
+        base_url = os.environ.get("GIGACHAT_BASE_URL", DEFAULT_GIGACHAT_BASE_URL)
+        url = f"{base_url.rstrip('/')}/chat/completions"
+
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+        }
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        }
+        resp = requests.post(url, json=payload, headers=headers, verify=False, timeout=60)
+        resp.raise_for_status()
+        data = resp.json()
+
+        choices = data.get("choices") or [{}]
+        msg = (choices[0] if choices else {}).get("message") or {}
+        text = msg.get("content") or ""
+        usage = data.get("usage") or {}
+        return text, usage
 
     def _fetch_generation_cost(self, generation_id: str) -> Optional[float]:
         """Fetch cost from OpenRouter Generation API as fallback."""
@@ -175,16 +249,15 @@ class LLMClient:
         max_tokens: int = 16384,
         tool_choice: str = "auto",
     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-        """Single LLM call. Returns: (response_message_dict, usage_dict with cost)."""
+        """Single LLM call via OpenRouter. Returns: (response_message_dict, usage_dict with cost)."""
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
         extra_body: Dict[str, Any] = {}
-        if self._provider == "openrouter":
-            extra_body["reasoning"] = {"effort": effort, "exclude": True}
+        extra_body["reasoning"] = {"effort": effort, "exclude": True}
 
         # Pin Anthropic models to Anthropic provider for prompt caching
-        if self._provider == "openrouter" and model.startswith("anthropic/"):
+        if model.startswith("anthropic/"):
             extra_body["provider"] = {
                 "order": ["Anthropic"],
                 "allow_fallbacks": False,
@@ -296,13 +369,11 @@ class LLMClient:
 
     def default_model(self) -> str:
         """Return the single default model from env. LLM switches via tool if needed."""
-        provider_default = DEFAULT_GIGACHAT_MODEL if self._provider == "gigachat" else DEFAULT_OPENROUTER_MODEL
-        return os.environ.get("OUROBOROS_MODEL", provider_default)
+        return os.environ.get("OUROBOROS_MODEL", DEFAULT_OPENROUTER_MODEL)
 
     def available_models(self) -> List[str]:
         """Return list of available models from env (for switch_model tool schema)."""
-        provider_default = DEFAULT_GIGACHAT_MODEL if self._provider == "gigachat" else DEFAULT_OPENROUTER_MODEL
-        main = os.environ.get("OUROBOROS_MODEL", provider_default)
+        main = os.environ.get("OUROBOROS_MODEL", DEFAULT_OPENROUTER_MODEL)
         code = os.environ.get("OUROBOROS_MODEL_CODE", "")
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
         models = [main]
