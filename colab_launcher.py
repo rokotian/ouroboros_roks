@@ -225,6 +225,7 @@ from supervisor.queue import (
     persist_queue_snapshot, restore_pending_from_snapshot,
     cancel_task_by_id, queue_review_task, sort_pending,
 )
+from supervisor.rpl_scheduler import tick_rpl_scheduler
 
 from supervisor.workers import (
     init as workers_init, get_event_q, WORKERS, PENDING, RUNNING,
@@ -488,6 +489,7 @@ while True:
 
     enforce_task_timeouts()
     enqueue_evolution_task_if_needed()
+    tick_rpl_scheduler()
     assign_tasks()
     persist_queue_snapshot(reason="main_loop")
 
