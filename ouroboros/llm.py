@@ -1,7 +1,7 @@
 """
 Ouroboros — LLM client.
 
-The only module that communicates with the LLM API (OpenRouter).
+The only module that communicates with the LLM API.
 Contract: chat(), default_model(), available_models(), add_usage().
 """
 
@@ -14,7 +14,10 @@ from typing import Any, Dict, List, Optional, Tuple
 
 log = logging.getLogger(__name__)
 
-DEFAULT_LIGHT_MODEL = "google/gemini-3-pro-preview"
+DEFAULT_LIGHT_MODEL = "GigaChat-2-Max"
+DEFAULT_GIGACHAT_BASE_URL = "https://gigachat.devices.sberbank.ru/api/v1"
+DEFAULT_GIGACHAT_MODEL = "GigaChat-2-Max"
+DEFAULT_OPENROUTER_MODEL = "anthropic/claude-sonnet-4.6"
 
 
 def normalize_reasoning_effort(value: str, default: str = "medium") -> str:
@@ -103,28 +106,40 @@ def fetch_openrouter_pricing() -> Dict[str, Tuple[float, float, float]]:
 
 
 class LLMClient:
-    """OpenRouter API wrapper. All LLM calls go through this class."""
+    """API wrapper. All LLM calls go through this class."""
 
     def __init__(
         self,
         api_key: Optional[str] = None,
-        base_url: str = "https://openrouter.ai/api/v1",
+        base_url: str = "",
     ):
-        self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
-        self._base_url = base_url
+        gigachat_api_key = os.environ.get("Gigachat_API", "") or os.environ.get("GIGACHAT_API", "")
+
+        # Default behavior: use GigaChat whenever Gigachat_API token is present.
+        if gigachat_api_key:
+            self._provider = "gigachat"
+            self._api_key = api_key or gigachat_api_key
+            self._base_url = base_url or os.environ.get("GIGACHAT_BASE_URL", DEFAULT_GIGACHAT_BASE_URL)
+        else:
+            self._provider = "openrouter"
+            self._api_key = api_key or os.environ.get("OPENROUTER_API_KEY", "")
+            self._base_url = base_url or "https://openrouter.ai/api/v1"
+
         self._client = None
 
     def _get_client(self):
         if self._client is None:
             from openai import OpenAI
-            self._client = OpenAI(
-                base_url=self._base_url,
-                api_key=self._api_key,
-                default_headers={
+            kwargs: Dict[str, Any] = {
+                "base_url": self._base_url,
+                "api_key": self._api_key,
+            }
+            if self._provider == "openrouter":
+                kwargs["default_headers"] = {
                     "HTTP-Referer": "https://colab.research.google.com/",
                     "X-Title": "Ouroboros",
-                },
-            )
+                }
+            self._client = OpenAI(**kwargs)
         return self._client
 
     def _fetch_generation_cost(self, generation_id: str) -> Optional[float]:
@@ -164,12 +179,12 @@ class LLMClient:
         client = self._get_client()
         effort = normalize_reasoning_effort(reasoning_effort)
 
-        extra_body: Dict[str, Any] = {
-            "reasoning": {"effort": effort, "exclude": True},
-        }
+        extra_body: Dict[str, Any] = {}
+        if self._provider == "openrouter":
+            extra_body["reasoning"] = {"effort": effort, "exclude": True}
 
         # Pin Anthropic models to Anthropic provider for prompt caching
-        if model.startswith("anthropic/"):
+        if self._provider == "openrouter" and model.startswith("anthropic/"):
             extra_body["provider"] = {
                 "order": ["Anthropic"],
                 "allow_fallbacks": False,
@@ -180,8 +195,9 @@ class LLMClient:
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "extra_body": extra_body,
         }
+        if extra_body:
+            kwargs["extra_body"] = extra_body
         if tools:
             # Add cache_control to last tool for Anthropic prompt caching
             # This caches all tool schemas (they never change between calls)
@@ -280,11 +296,13 @@ class LLMClient:
 
     def default_model(self) -> str:
         """Return the single default model from env. LLM switches via tool if needed."""
-        return os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+        provider_default = DEFAULT_GIGACHAT_MODEL if self._provider == "gigachat" else DEFAULT_OPENROUTER_MODEL
+        return os.environ.get("OUROBOROS_MODEL", provider_default)
 
     def available_models(self) -> List[str]:
         """Return list of available models from env (for switch_model tool schema)."""
-        main = os.environ.get("OUROBOROS_MODEL", "anthropic/claude-sonnet-4.6")
+        provider_default = DEFAULT_GIGACHAT_MODEL if self._provider == "gigachat" else DEFAULT_OPENROUTER_MODEL
+        main = os.environ.get("OUROBOROS_MODEL", provider_default)
         code = os.environ.get("OUROBOROS_MODEL_CODE", "")
         light = os.environ.get("OUROBOROS_MODEL_LIGHT", "")
         models = [main]
