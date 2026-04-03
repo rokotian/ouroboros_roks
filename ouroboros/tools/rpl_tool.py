@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 import datetime
+import re
 
 import requests
 from bs4 import BeautifulSoup
@@ -142,41 +143,83 @@ async def handle_get_rpl_standings() -> str:
 # Расписание матчей — sports.ru
 # ──────────────────────────────────────────────
 
-def _parse_sports_ru_fixtures(html: str, round_idx: int = 0) -> list[dict]:
+def _extract_rounds(html: str) -> list[tuple[int, list[dict]]]:
     """
-    Парсит расписание с sports.ru/rfpl/calendar/.
-    round_idx=0 — текущий/ближайший тур, 1 — следующий и т.д.
-    Возвращает список dict: {date, time, home, away}.
+    Парсит все туры с sports.ru/rfpl/calendar/.
+    Возвращает список (round_num, matches) отсортированных по номеру тура.
+    matches — список dict: {date, time, home, away}.
+    
+    Страница содержит заголовки "23 ТУР", "24 ТУР" и т.д.,
+    за каждым следует таблица class="stat-table" с матчами.
     """
     soup = BeautifulSoup(html, "html.parser")
-    tables = soup.find_all("table", class_="stat-table")
-    if not tables or round_idx >= len(tables):
-        return []
+    rounds = []
 
-    table = tables[round_idx]
-    matches = []
-    for tr in table.find_all("tr")[1:]:  # пропускаем заголовок
-        tds = tr.find_all("td")
-        if len(tds) < 4:
-            continue
-        raw_dt = tds[0].get_text(strip=True)  # "04.04.2026|13:00"
-        home = tds[1].get_text(strip=True)
-        away = tds[3].get_text(strip=True)
-        if not home or not away:
-            continue
-        if "|" in raw_dt:
-            date_part, time_part = raw_dt.split("|", 1)
-        else:
-            date_part, time_part = raw_dt, ""
-        matches.append({"date": date_part, "time": time_part, "home": home, "away": away})
+    # Ищем все заголовки туров: элемент содержащий текст "N ТУР"
+    tour_pattern = re.compile(r'^(\d+)\s+ТУР$', re.IGNORECASE)
 
-    return matches
+    # Перебираем все элементы в документе в порядке появления
+    all_elements = soup.find_all(True)
+    i = 0
+    while i < len(all_elements):
+        el = all_elements[i]
+        text = el.get_text(strip=True)
+        m = tour_pattern.match(text)
+        if m:
+            round_num = int(m.group(1))
+            # Ищем следующую таблицу stat-table после этого элемента
+            table = el.find_next("table", class_="stat-table")
+            if table:
+                matches = []
+                for tr in table.find_all("tr")[1:]:  # пропускаем заголовок
+                    tds = tr.find_all("td")
+                    if len(tds) < 4:
+                        continue
+                    raw_dt = tds[0].get_text(strip=True)  # "04.04.2026|13:00"
+                    home = tds[1].get_text(strip=True)
+                    away = tds[3].get_text(strip=True)
+                    if not home or not away:
+                        continue
+                    if "|" in raw_dt:
+                        date_part, time_part = raw_dt.split("|", 1)
+                    else:
+                        date_part, time_part = raw_dt, ""
+                    matches.append({"date": date_part, "time": time_part, "home": home, "away": away})
+                if matches:
+                    rounds.append((round_num, matches))
+        i += 1
+
+    # Дедупликация — оставляем уникальные туры
+    seen = {}
+    for rn, matches in rounds:
+        if rn not in seen:
+            seen[rn] = matches
+    return sorted(seen.items())
+
+
+def _find_next_round(rounds: list[tuple[int, list[dict]]]) -> tuple[int, list[dict]] | None:
+    """
+    Среди всех туров находит ближайший незавершённый
+    (первый тур у которого есть матч с датой >= сегодня или счётом "- : -").
+    """
+    today_str = datetime.date.today().strftime("%d.%m.%Y")
+    today = datetime.date.today()
+
+    for rn, matches in rounds:
+        for m in matches:
+            # Если счёт "- : -" — матч не сыгран
+            # Если дата >= сегодня — тоже подходит
+            try:
+                match_date = datetime.datetime.strptime(m["date"], "%d.%m.%Y").date()
+                if match_date >= today:
+                    return rn, matches
+            except Exception:
+                pass
+    return None
 
 
 def _format_date_ru(date_str: str) -> str:
-    """
-    Форматирует дату "04.04.2026" -> "04 апр (сб)".
-    """
+    """Форматирует дату "04.04.2026" -> "04 апр (сб)"."""
     try:
         dt = datetime.datetime.strptime(date_str, "%d.%m.%Y")
         day = dt.day
@@ -187,11 +230,28 @@ def _format_date_ru(date_str: str) -> str:
         return date_str
 
 
+def _format_fixtures(round_num: int, matches: list[dict]) -> str:
+    """Форматирует расписание тура в читаемый текст."""
+    # Группируем по дате
+    by_date: dict[str, list[dict]] = {}
+    for m in matches:
+        by_date.setdefault(m["date"], []).append(m)
+
+    lines = [f"📅 *{round_num}-й тур РПЛ* (источник: sports.ru)\n"]
+    for date_str, day_matches in by_date.items():
+        lines.append(f"\n📆 {_format_date_ru(date_str)}")
+        for m in day_matches:
+            time_str = m["time"] if m["time"] else "??:??"
+            home = m["home"]
+            away = m["away"]
+            loko_marker = " 🚂" if "локомотив" in home.lower() or "локомотив" in away.lower() else ""
+            lines.append(f"🕐 {time_str}  {home} — {away}{loko_marker}")
+
+    return "\n".join(lines)
+
+
 async def handle_get_rpl_fixtures(round_num: Optional[int] = None) -> str:
     """Получает расписание матчей РПЛ текущего или указанного тура. Источник: sports.ru"""
-    # round_num — номер тура (1-based), round_idx для парсера (0-based, относительно первой таблицы)
-    round_idx = max(0, (round_num - 1) if round_num else 0)
-
     try:
         resp = requests.get(SPORTS_RU_CALENDAR_URL, headers=HEADERS, timeout=15)
         resp.raise_for_status()
@@ -201,51 +261,32 @@ async def handle_get_rpl_fixtures(round_num: Optional[int] = None) -> str:
             f"Смотри вручную: {SPORTS_RU_CALENDAR_URL}"
         )
 
-    matches = _parse_sports_ru_fixtures(resp.text, round_idx)
-
-    if not matches:
+    rounds = _extract_rounds(resp.text)
+    if not rounds:
         return (
             "⚠️ Не удалось спарсить расписание матчей РПЛ.\n"
             f"Смотри актуальное расписание: {SPORTS_RU_CALENDAR_URL}"
         )
 
-    # Группируем по дате
-    by_date: dict[str, list[dict]] = {}
-    for m in matches:
-        by_date.setdefault(m["date"], []).append(m)
-
-    # Определяем номер тура по данным на странице (первая таблица — текущий тур)
-    # Пытаемся угадать номер тура из заголовка над таблицей
-    tour_label = ""
-    try:
-        soup = BeautifulSoup(resp.text, "html.parser")
-        tables = soup.find_all("table", class_="stat-table")
-        if tables and round_idx < len(tables):
-            # ищем заголовок h2/h3/div рядом с таблицей
-            heading = tables[round_idx].find_previous(["h2", "h3", "h4"])
-            if heading:
-                tour_label = heading.get_text(strip=True)
-    except Exception:
-        pass
-
-    if tour_label:
-        header = f"📅 *{tour_label}* (источник: sports.ru)\n"
+    if round_num is not None:
+        # Ищем конкретный тур
+        target = dict(rounds).get(round_num)
+        if not target:
+            available = [str(rn) for rn, _ in rounds]
+            return (
+                f"⚠️ Тур {round_num} не найден на странице. "
+                f"Доступные туры: {', '.join(available)}.\n"
+                f"Смотри: {SPORTS_RU_CALENDAR_URL}"
+            )
+        return _format_fixtures(round_num, target)
     else:
-        round_info = f" тур" if not round_num else f" {round_num}-й тур"
-        header = f"📅 *Расписание РПЛ —{round_info}* (источник: sports.ru)\n"
-
-    lines = [header]
-    for date_str, day_matches in by_date.items():
-        lines.append(f"\n📆 {_format_date_ru(date_str)}")
-        for m in day_matches:
-            time_str = m["time"] if m["time"] else "??:??"
-            # Выделяем Локомотив
-            home = m["home"]
-            away = m["away"]
-            loko_marker = " 🚂" if "локомотив" in home.lower() or "локомотив" in away.lower() else ""
-            lines.append(f"  🕐 {time_str}  {home} — {away}{loko_marker}")
-
-    return "\n".join(lines)
+        # Находим ближайший незавершённый тур
+        result = _find_next_round(rounds)
+        if not result:
+            # Если все туры завершены — показываем последний
+            result = rounds[-1]
+        rn, matches = result
+        return _format_fixtures(rn, matches)
 
 
 # ──────────────────────────────────────────────
@@ -274,8 +315,10 @@ def get_tools() -> list[dict]:
             "function": {
                 "name": "get_rpl_fixtures",
                 "description": (
-                    "Получает расписание матчей текущего тура Российской Премьер-Лиги (РПЛ). "
-                    "Источник: sports.ru. Можно указать порядковый номер тура в сезоне."
+                    "Получает расписание матчей Российской Премьер-Лиги (РПЛ). "
+                    "Без параметров — ближайший незавершённый тур. "
+                    "Можно указать round_num — номер тура в сезоне (например 24). "
+                    "Источник: sports.ru."
                 ),
                 "parameters": {
                     "type": "object",
