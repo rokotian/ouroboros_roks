@@ -1,8 +1,10 @@
 """Weekly RPL publication scheduler.
 
 Schedules two recurring tasks for the owner chat (Moscow time):
-- Friday 19:00 -> publish next RPL round fixtures.
-- Sunday 20:00 -> publish current RPL standings table.
+- Friday 19:00-20:59 -> publish next RPL round fixtures.
+- Sunday 20:00-21:59 -> publish current RPL standings table.
+
+Window is 2 hours wide so that a brief Colab restart doesn't miss the slot.
 """
 
 from __future__ import annotations
@@ -70,8 +72,9 @@ def tick_rpl_scheduler() -> None:
 
     now_msk = datetime.datetime.now(tz=MSK_TZ)
 
-    # Friday 19:00 (Moscow): next round fixtures.
-    if now_msk.weekday() == 4 and now_msk.hour == 19:
+    # Friday 19:00-20:59 (Moscow): next round fixtures.
+    # Window is 2 hours wide — a brief Colab restart won't miss the slot.
+    if now_msk.weekday() == 4 and 19 <= now_msk.hour < 21:
         slot_id = _week_slot_id(now_msk, RPL_FIXTURES_SLOT)
         last_slot = str(st.get("rpl_last_fixtures_slot_id") or "")
         if last_slot != slot_id:
@@ -80,10 +83,9 @@ def tick_rpl_scheduler() -> None:
                 slot_id=slot_id,
                 text=(
                     "Подготовь и опубликуй расписание следующего тура Российской Премьер-Лиги. "
-                    "Проверь актуальные даты/время матчей в источниках: "
-                    f"{RPL_PRIMARY_MATCHES_URL} (основной), {RPL_FALLBACK_URL} (резерв). "
+                    "Используй инструмент get_rpl_fixtures чтобы получить актуальное расписание. "
                     "Отправь сообщение с полным списком пар, датой и временем каждого матча "
-                    "(московское время) и явно укажи использованный источник."
+                    "(московское время) и отметь матч Локомотива если он есть."
                 ),
                 announce="📅 Запланирована публикация расписания очередного тура РПЛ (task {task_id}).",
             )
@@ -91,8 +93,9 @@ def tick_rpl_scheduler() -> None:
             save_state(st)
             log.info("RPL fixtures publication scheduled for slot %s", slot_id)
 
-    # Sunday 20:00 (Moscow): standings table.
-    if now_msk.weekday() == 6 and now_msk.hour == 20:
+    # Sunday 20:00-21:59 (Moscow): standings table.
+    # Window is 2 hours wide — a brief Colab restart won't miss the slot.
+    if now_msk.weekday() == 6 and 20 <= now_msk.hour < 22:
         slot_id = _week_slot_id(now_msk, RPL_STANDINGS_SLOT)
         last_slot = str(st.get("rpl_last_standings_slot_id") or "")
         if last_slot != slot_id:
@@ -101,10 +104,8 @@ def tick_rpl_scheduler() -> None:
                 slot_id=slot_id,
                 text=(
                     "Подготовь и опубликуй актуальную турнирную таблицу Российской Премьер-Лиги. "
-                    "Проверь данные в источниках: "
-                    f"{RPL_PRIMARY_TABLE_URL} (основной), {RPL_FALLBACK_URL} (резерв). "
-                    "Отправь компактную таблицу: место, команда, игры, очки, разница мячей, "
-                    "и явно укажи использованный источник."
+                    "Используй инструмент get_rpl_standings чтобы получить таблицу. "
+                    "Отправь компактную таблицу: место, команда, игры, очки."
                 ),
                 announce="📊 Запланирована публикация турнирной таблицы РПЛ (task {task_id}).",
             )
