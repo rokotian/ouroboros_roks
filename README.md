@@ -81,7 +81,7 @@ Telegram --> colab_launcher.py
 | `Gigachat_API` | Yes (default LLM path) | GigaChat API token from your Sber developer account |
 | `OPENROUTER_API_KEY` | No (fallback provider) | [openrouter.ai/keys](https://openrouter.ai/keys) -- Create an account, add credits, generate a key |
 | `TELEGRAM_BOT_TOKEN` | Yes | [@BotFather](https://t.me/BotFather) on Telegram (see Step 1) |
-| `TOTAL_BUDGET` | Yes | Your spending limit in USD (e.g. `50`) |
+| `TOTAL_BUDGET` | Yes | Your spending limit in USD (e.g. `200`) |
 | `GITHUB_TOKEN` | Yes | [github.com/settings/tokens](https://github.com/settings/tokens) -- Generate a classic token with `repo` scope |
 | `OPENAI_API_KEY` | No | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) -- Enables web search tool |
 | `ANTHROPIC_API_KEY` | No | [console.anthropic.com/settings/keys](https://console.anthropic.com/settings/keys) -- Enables Claude Code CLI |
