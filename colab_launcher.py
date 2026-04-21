@@ -538,18 +538,28 @@ while True:
             mime_type = str(doc.get("mime_type") or "")
             filename = str(doc.get("file_name") or "unknown")
             file_id = doc.get("file_id")
+            log.info(f"[DOC] document recv: filename={filename!r} mime={mime_type!r} file_id={str(file_id)[:20] if file_id else None}")
             if mime_type.startswith("image/"):
                 if file_id:
                     b64, mime = TG.download_file_base64(file_id)
                     if b64:
                         image_data = (b64, mime, caption)
             elif file_id:
-                import base64 as _b64mod
-                b64_content, _mime = TG.download_file_base64(file_id)
-                if b64_content:
-                    raw_bytes = _b64mod.b64decode(b64_content)
-                    extracted_text = extract_document_text(raw_bytes, mime_type, filename)
-                    file_block = make_document_block(filename, extracted_text, max_chars=50_000)
+                try:
+                    import base64 as _b64mod
+                    b64_content, _mime = TG.download_file_base64(file_id)
+                    log.info(f"[DOC] download: b64_len={len(b64_content) if b64_content else 0} mime={_mime!r}")
+                    if b64_content:
+                        raw_bytes = _b64mod.b64decode(b64_content)
+                        log.info(f"[DOC] raw_bytes: {len(raw_bytes)}")
+                        extracted_text = extract_document_text(raw_bytes, mime_type, filename)
+                        log.info(f"[DOC] extracted_text len: {len(extracted_text) if extracted_text else 0}")
+                        file_block = make_document_block(filename, extracted_text, max_chars=50_000)
+                        text = (text + "\n\n" + file_block) if text else file_block
+                        log.info(f"[DOC] file_block added, total text len: {len(text)}")
+                except Exception as _doc_err:
+                    log.error(f"[DOC] parse error: {_doc_err}", exc_info=True)
+                    file_block = f"[Ошибка чтения файла {filename}: {_doc_err}]"
                     text = (text + "\n\n" + file_block) if text else file_block
 
         st = load_state()
