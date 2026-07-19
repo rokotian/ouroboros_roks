@@ -1,0 +1,27 @@
+{
+  "timezone": "Europe/Berlin",
+  "lookback_hours": 36,
+  "top_n": 5,
+  "min_duration_seconds": 180,
+  "max_duration_seconds": 10800,
+  "exclude_shorts": true,
+  "preferred_languages": ["ru", "en"],
+  "interests": [
+    "искусственный интеллект",
+    "корпоративные ИИ-ассистенты",
+    "цифровая трансформация",
+    "управление продуктами",
+    "технологии",
+    "бизнес",
+    "футбол",
+    "здоровье и тренировки"
+  ],
+  "exclude_keywords": [
+    "shorts",
+    "розыгрыш",
+    "giveaway",
+    "реклама"
+  ],
+  "openai_model": "gpt-5-mini",
+  "email_subject": "YouTube — ежедневный дайджест"
+}
